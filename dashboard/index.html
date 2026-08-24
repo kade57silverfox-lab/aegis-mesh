@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Autonomous Gateway — Operator Console</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: #121821;
+    --panel-border: #1f2733;
+    --text: #d7e0ea;
+    --muted: #7d8ba0;
+    --green: #2ecc71;
+    --yellow: #f1c40f;
+    --red: #e74c3c;
+    --accent: #4da6ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--panel-border);
+  }
+  header h1 { font-size: 16px; margin: 0; color: var(--muted); font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase; }
+
+  .posture-badge {
+    font-size: 28px;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    padding: 10px 28px;
+    border-radius: 10px;
+    transition: background-color 0.4s ease, color 0.4s ease;
+  }
+  .posture-NORMAL   { background: rgba(46,204,113,0.15); color: var(--green); border: 2px solid var(--green); }
+  .posture-ELEVATED { background: rgba(241,196,15,0.15); color: var(--yellow); border: 2px solid var(--yellow); }
+  .posture-LOCKDOWN { background: rgba(231,76,60,0.18); color: var(--red); border: 2px solid var(--red); animation: pulse 1.2s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
+
+  main { padding: 20px 24px; display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 12px;
+    padding: 16px 18px;
+  }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 0 0 12px 0; }
+  .full-width { grid-column: 1 / -1; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--panel-border); }
+  th { color: var(--muted); font-weight: 600; }
+  .healthy-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .dot-up { background: var(--green); }
+  .dot-down { background: var(--red); }
+
+  .stat-row { display: flex; gap: 18px; flex-wrap: wrap; }
+  .stat { min-width: 90px; }
+  .stat .value { font-size: 22px; font-weight: 700; }
+  .stat .label { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+
+  canvas { max-height: 220px; }
+  .score-bars { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+  .score-bar-label { font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; }
+  .score-bar-track { background: #1a2230; border-radius: 6px; height: 8px; overflow: hidden; }
+  .score-bar-fill { height: 100%; background: var(--accent); transition: width 0.4s ease; }
+
+  .blocked-row { color: var(--red); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Autonomous API Gateway — Operator Console</h1>
+  <div id="postureBadge" class="posture-badge posture-NORMAL">NORMAL</div>
+</header>
+
+<main>
+
+  <div class="panel">
+    <h2>Attack Score Composition</h2>
+    <div id="scoreBars" class="score-bars"></div>
+    <canvas id="attackScoreChart" style="margin-top:14px;"></canvas>
+  </div>
+
+  <div class="panel">
+    <h2>Request Latency (ms)</h2>
+    <div class="stat-row" id="latencyStats"></div>
+    <canvas id="latencyChart" style="margin-top:14px;"></canvas>
+  </div>
+
+  <div class="panel">
+    <h2>Routing Table (live latency &amp; health)</h2>
+    <table>
+      <thead><tr><th>Upstream</th><th>Status</th><th>EWMA Latency</th><th>Capacity</th><th>Requests</th><th>Errors</th></tr></thead>
+      <tbody id="routingTableBody"></tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2>Rate Limiter</h2>
+    <div class="stat-row" id="rateLimiterStats"></div>
+  </div>
+
+  <div class="panel full-width">
+    <h2>TLS / Client Fingerprint Reputation (top 20 by score)</h2>
+    <table>
+      <thead><tr><th>Fingerprint</th><th>Score</th><th>Violations</th><th>Requests</th><th>Status</th></tr></thead>
+      <tbody id="fingerprintTableBody"></tbody>
+    </table>
+  </div>
+
+</main>
+
+<script>
+const POLL_MS = 2000;
+
+const attackScoreChart = new Chart(document.getElementById('attackScoreChart'), {
+  type: 'line',
+  data: { labels: [], datasets: [{ label: 'Attack score', data: [], borderColor: '#4da6ff', backgroundColor: 'rgba(77,166,255,0.1)', fill: true, tension: 0.3, pointRadius: 0 }] },
+  options: { responsive: true, scales: { y: { min: 0, max: 1, ticks: { color: '#7d8ba0' } }, x: { display: false } }, plugins: { legend: { display: false } } }
+});
+
+const latencyChart = new Chart(document.getElementById('latencyChart'), {
+  type: 'line',
+  data: { labels: [], datasets: [{ label: 'Latency (ms)', data: [], borderColor: '#2ecc71', backgroundColor: 'rgba(46,204,113,0.1)', fill: true, tension: 0.3, pointRadius: 0 }] },
+  options: { responsive: true, scales: { y: { ticks: { color: '#7d8ba0' } }, x: { display: false } }, plugins: { legend: { display: false } } }
+});
+
+function setBadge(level) {
+  const el = document.getElementById('postureBadge');
+  el.textContent = level;
+  el.className = 'posture-badge posture-' + level;
+}
+
+function renderScoreBars(components) {
+  const container = document.getElementById('scoreBars');
+  container.innerHTML = '';
+  const labels = {
+    rateAnomaly: 'Request-rate anomaly (z-score based)',
+    entropyAnomaly: 'Payload entropy anomaly',
+    fingerprintPenalty: 'Fingerprint reputation penalty',
+    rejectionRatio: 'Rate-limiter rejection ratio',
+  };
+  for (const key of Object.keys(labels)) {
+    const val = components?.[key] ?? 0;
+    const row = document.createElement('div');
+    row.innerHTML = `
+      <div class="score-bar-label"><span>${labels[key]}</span><span>${(val * 100).toFixed(0)}%</span></div>
+      <div class="score-bar-track"><div class="score-bar-fill" style="width:${Math.min(100, val * 100)}%"></div></div>
+    `;
+    container.appendChild(row);
+  }
+}
+
+function renderStatRow(elId, stats) {
+  const el = document.getElementById(elId);
+  el.innerHTML = Object.entries(stats).map(([label, value]) =>
+    `<div class="stat"><div class="value">${value}</div><div class="label">${label}</div></div>`
+  ).join('');
+}
+
+function renderRoutingTable(rows) {
+  const body = document.getElementById('routingTableBody');
+  body.innerHTML = rows.map(u => `
+    <tr>
+      <td>${u.id}</td>
+      <td><span class="healthy-dot ${u.healthy ? 'dot-up' : 'dot-down'}"></span>${u.healthy ? 'Healthy' : 'Down'}</td>
+      <td>${u.latencyEwmaMs} ms</td>
+      <td>${(u.capacityFactor * 100).toFixed(0)}%</td>
+      <td>${u.totalRequests}</td>
+      <td>${u.totalErrors}</td>
+    </tr>
+  `).join('');
+}
+
+function renderFingerprintTable(rows) {
+  const body = document.getElementById('fingerprintTableBody');
+  body.innerHTML = rows.map(fp => `
+    <tr class="${fp.blocked ? 'blocked-row' : ''}">
+      <td>${fp.fingerprint.slice(0, 16)}…</td>
+      <td>${fp.score}</td>
+      <td>${fp.violations}</td>
+      <td>${fp.requests}</td>
+      <td>${fp.blocked ? 'BLOCKED' : 'ok'}</td>
+    </tr>
+  `).join('') || '<tr><td colspan="5" style="color:#7d8ba0">No traffic observed yet</td></tr>';
+}
+
+function pushSeries(chart, points, valueKey) {
+  chart.data.labels = points.map((_, i) => i);
+  chart.data.datasets[0].data = points.map(p => typeof p === 'object' ? p[valueKey ?? 'value'] : p);
+  chart.update('none');
+}
+
+async function poll() {
+  try {
+    const res = await fetch('/api/state');
+    const state = await res.json();
+
+    setBadge(state.posture.level);
+    renderScoreBars(state.posture.recentHistory.at(-1)?.components || {});
+
+    renderStatRow('latencyStats', {
+      'p50': (state.latency.p50 ?? 0).toFixed(0) + 'ms',
+      'p95': (state.latency.p95 ?? 0).toFixed(0) + 'ms',
+      'p99': (state.latency.p99 ?? 0).toFixed(0) + 'ms',
+      'avg': (state.latency.avg ?? 0).toFixed(0) + 'ms',
+    });
+
+    renderStatRow('rateLimiterStats', {
+      'Capacity': state.rateLimiter.effectiveCapacity,
+      'Refill/s': state.rateLimiter.effectiveRefillRate,
+      'Clients tracked': state.rateLimiter.trackedClients,
+      'Rejected': state.rateLimiter.rejected,
+      'Rejection %': (state.rateLimiter.rejectionRatio * 100).toFixed(1) + '%',
+    });
+
+    renderRoutingTable(state.routing);
+    renderFingerprintTable(state.fingerprints);
+
+    pushSeries(attackScoreChart, state.attackScoreSeries, 'value');
+    pushSeries(latencyChart, state.latencySeries, 'value');
+  } catch (err) {
+    console.error('poll failed', err);
+  }
+}
+
+poll();
+setInterval(poll, POLL_MS);
+</script>
+
+</body>
+</html>

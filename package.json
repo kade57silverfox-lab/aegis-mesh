@@ -1,0 +1,19 @@
+{
+  "name": "autonomous-api-gateway",
+  "version": "1.0.0",
+  "description": "Self-optimizing autonomous API gateway: dynamic reverse proxy + adaptive rate limiting + TLS fingerprinting + statistical anomaly detection + self-mutating security posture.",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js",
+    "mock-upstreams": "node upstreams/mock-upstream.js",
+    "load-test": "node test/load-test.js",
+    "certs": "bash scripts/generate-tls-certs.sh"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {},
+  "devDependencies": {},
+  "license": "MIT"
+}
