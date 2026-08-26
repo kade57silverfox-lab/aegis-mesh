@@ -69,7 +69,8 @@ class TlsFingerprint {
       this.reputations.set(fingerprint, rep);
     }
     rep.violations += 1;
-    rep.score = Math.min(1, rep.score + this.config.fingerprint.reputationPenaltyPerViolation);
+    const raw = rep.score + this.config.fingerprint.reputationPenaltyPerViolation;
+    rep.score = Math.min(1, Math.round(raw * 1000) / 1000);
     rep.lastReason = reason;
   }
 
